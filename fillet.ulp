@@ -1,0 +1,270 @@
+#usage "<b>Fillet5</b>\n"
+       "<p>"
+       "This ULP emualtes the Autocad 'Fillet' command. "
+       "It fillets two wires that are on the user defined layer.  Optionally, it then changes them back to "
+       "a user selected layer. "
+       "This version only supports a fillet radius of zero.  Eagle 5.0 supports miters with radius >=0"
+       "<p>"
+       "<author>Author: Neil Allison, neil@avon-tech-solutions.co.nz</author>\n"
+
+/*
+Rev History
+File:   Fillet5.ulp
+Author: Neil Allison, 
+        Avon Technical Solutions, PO Box 20350, Christchurch, New Zealand
+        email: neil@avon-tech-solutions.co.nz
+        (C) Copyright, Neil Allison, 2008, All rights reserved.
+Date:   07-Dec-2007  NJA	Original, based on info in http://www.gamedev.net/community/forums/topic.asp?topic_id=346591
+							tested ver Win 4.09r1
+							Fillet circular http://tog.acm.org/GraphicsGems/gemsiii/fillet.c		
+	24-Jun-2008  NJA  Changed Draft layer to 254 so same as Renumber-sch-group.ulp.  Draft used for footprints
+	29-Jul-2008  NJA  Change visibleLayer to hiddenLayer to make better consistency with 0 & 1 values
+	16-Dec-2009  NJA  Revised to use ingroup() with V5.6.  Group the ends to be joined
+*/
+
+//USER DEFINED VARIABLES
+//Edit the variables below to change the wire width, first layer and maximum number of classes
+//int draftLayer = 254; //default layer that wires are on 
+int draftColour = 12; //Red
+int outputLayer = 21; //tPlace for Boards & Library Packages
+int outputLayerSch = 253; // 95 Values for schematics
+int bOriginalToOutputLayer = 0; // Copy first line in draftLayer to the output layer 0 = no, 1 = yes
+								// Defining what is 1st line might be trial and error...
+// Constants
+int bDebug = 0; // 0 = false, 1 = true
+int iMINLAYER = 1;
+int iMAXLAYER = 255;
+int iMAXCOORDINATE =  8388607; //  838860.7um
+int iMINCOORDINATE = -8388607; // -838860.7um
+
+// Variables
+real L1x1, L1y1, L1x2, L1y2;
+real L2x1, L2y1, L2x2, L2y2;
+real a1, b1, d1, a2, b2, d2;
+real L1x, L1y;
+int iLinesAssigned = 0;
+int bDoScript = 0;
+real denom,IntersectX,IntersectY;
+int hiddenLayer[]; // by definition all elements are = 0 i.e. not hidden = visible
+int iLayer = 0;
+
+int closestEnd(real x1, real y1, real x2, real y2, real px, real py)
+{
+	// returns 0 if equidistant, 1 if (x1,y1) is closest to (px,py) or 2 if other one is closer
+	real d1, d2;
+	d1 = abs(px-x1)+ abs(py-y1);
+	d2 = abs(px-x2)+ abs(py-y2);
+	//printf("# d1 %6.0f d2 %6.0f;\n", d1, d2);
+    if (d1 == d2){
+		//printf("# ret 0;\n");
+        return 0;
+		}
+    if (d1 > d2){ 
+		//printf("# ret 2;\n");
+        return 2;
+		}
+    else{
+        //printf("# ret 1;\n");
+		return 1;
+		}
+}
+    
+void assignWires(UL_WIRE W)
+{
+	if (iLinesAssigned == 2) {
+		// Only get here if assigning a third wire
+		dlgMessageBox("\n More than two wires on Draft Layer. \n Cannot fillet multiple wires. \n");
+		if (bDebug) printf("# Debug - More than 2 wires;\n");
+		iLinesAssigned = 0;
+		exit (0);
+	}
+	if (iLinesAssigned ==0) {
+		// assign to Line 1 (only need a, b, d)
+		if (ingroup(W) == 2){
+			L1x1 = u2mic(W.x2);
+			L1y1 = u2mic(W.y2);
+			L1x2 = u2mic(W.x1);
+			L1y2 = u2mic(W.y1);
+		}
+		else {
+			L1x1 = u2mic(W.x1);
+			L1y1 = u2mic(W.y1);
+			L1x2 = u2mic(W.x2);
+			L1y2 = u2mic(W.y2);
+		}
+		a1 = L1y1-L1y2;
+		b1 = L1x2-L1x1;
+		d1 = a1*L1x1+b1*L1y1;
+		iLinesAssigned = 1;
+	}
+	else {
+		// assign to Line 2
+		if (ingroup(W) == 2){
+			L2x1 = u2mic(W.x2);
+			L2y1 = u2mic(W.y2);
+			L2x2 = u2mic(W.x1);
+			L2y2 = u2mic(W.y1);
+		}
+		else {
+			L2x1 = u2mic(W.x1);
+			L2y1 = u2mic(W.y1);
+			L2x2 = u2mic(W.x2);
+			L2y2 = u2mic(W.y2);
+		}
+		a2 = L2y1-L2y2;
+		b2 = L2x2-L2x1;
+		d2 = a2*L2x1+b2*L2y1;
+		iLinesAssigned = 2;
+	}
+}
+
+void calculateFillet()
+{
+	denom = (a1*b2 - a2*b1);
+	if (denom != 0) {  // i.e. denom not zero => parallel
+		bDoScript = 1;
+		IntersectX = (b2*d1 - b1*d2)/denom;
+		IntersectY = (a1*d2 - a2*d1)/denom;
+		//printf("# L1 x1 %6.0f y1 %6.0f x2 %6.0f y2 %6.0f Int X %6.0f Y %6.0f;\n", 
+		//			L1x1,L1y1,L1x2,L1y2,IntersectX,IntersectY);
+/* 		// Assign closest end to end 1, if midpoint is closest make end 1 closest
+		if (closestEnd(L1x1,L1y1,L1x2,L1y2,IntersectX,IntersectY) == 2) {
+			L1x1 = L1x2;
+			L1y1 = L1y2;
+		}
+		if (closestEnd(L2x1,L2y1,L2x2,L2y2,IntersectX,IntersectY) == 2) {
+			L2x1 = L2x2;
+			L2y1 = L2y2;
+		}
+		//printf("# L1 x1 %6.0f y1 %6.0f x2 %6.0f y2 %6.0f Int X %6.0f Y %6.0f;\n", 
+		//			L1x1,L1y1,L1x2,L1y2,IntersectX,IntersectY); */
+	return;
+	}
+	else{
+		dlgMessageBox("\n  Lines are co-linear or parallel - nothing to do.\n");
+		exit (0);
+	}
+}
+
+// ******************************************************************
+// Main
+// ******************************************************************
+
+string ulp_path;
+int position = strrchr(argv[0], '/');
+if (position >= 0) {
+	ulp_path = strsub(argv[0], 0, position + 1);
+}
+if ((schematic)||(symbol)) outputLayer = outputLayerSch;
+
+// Set all layers OFF
+iLayer = 0;
+do {
+  iLayer++;
+	hiddenLayer[iLayer] = 1;
+} while (iLayer <= iMAXLAYER);
+
+
+
+output(ulp_path + "fillet.scr", "wt") {
+
+	if (schematic) {
+		schematic(Sch) {
+			Sch.layers(L){
+				if (L.visible) hiddenLayer[L.number] = 0;
+				}
+			Sch.sheets(Sht){
+				Sht.wires(Wire) {
+					//if (Wire.layer == draftLayer) assignWires(Wire);
+					if (ingroup(Wire)) assignWires(Wire);
+				}
+			}
+		}
+	}
+
+	if (board) {
+		board(Brd) {
+			Brd.layers(L){
+				if (L.visible) hiddenLayer[L.number] = 0;
+			}
+			Brd.wires(Wire) {
+				//if (Wire.layer == draftLayer) assignWires(Wire);
+				if (ingroup(Wire)) assignWires(Wire);
+			}
+		}
+	}
+
+	if (library) {
+		library(Lib) {
+			Lib.layers(L){
+				if (L.visible) hiddenLayer[L.number] = 0;
+			}
+			
+			if (package) {
+				package(Pac){
+					if (bDebug) printf("# Debug - Is Package Name %s;\n", Pac.name);
+					Pac.wires(Wire) {
+						//if (Wire.layer == draftLayer) assignWires(Wire);
+						if (ingroup(Wire)) assignWires(Wire);
+					}
+				}
+			}
+
+			if (symbol) {
+				symbol(Sym){
+					if (bDebug) printf("# Debug - Is Symbol;\n");
+					//outputLayer = outputLayerSch;
+					Sym.wires(Wire) {
+						//if (Wire.layer == draftLayer) assignWires(Wire);
+						if (ingroup(Wire)) assignWires(Wire);
+					}
+				}
+			}
+
+			if (deviceset) {
+				dlgMessageBox("\n Please run this ULP in a Schematic, Board, Package or Symbol\n");
+				if (bDebug) printf("# Debug - Run from Device so Nothing to do;\n");
+				exit (0);
+			}
+		}
+	}
+
+	if (iLinesAssigned == 2) {
+		calculateFillet();
+	}
+	else{
+		dlgMessageBox("\n  Only one line on draft layer, two are required.\n");
+		exit (0);
+	}	
+
+	// Create the output script
+	if (bDoScript){
+		printf("Set wire_bend 2;\n");
+		printf("Grid finest mic;\n");
+		// printf("Layer %u Draft;\n", draftLayer);
+		// printf("Set COLOR_LAYER %u %u;\n", draftLayer, draftColour);
+//		printf("Display None %u;\n", draftLayer);
+		printf("move (%6.0f %6.0f) (%6.0f %6.0f);\n", L1x1, L1y1, IntersectX, IntersectY);
+		printf("move (%6.0f %6.0f) (%6.0f %6.0f);\n", L2x1, L2y1, IntersectX, IntersectY);
+/* 		printf("change layer %u (%6.0f %6.0f);\n", outputLayer, L2x1, L2y1);
+		if (bOriginalToOutputLayer) printf("change layer %u (%6.0f %6.0f);\n", outputLayer, L1x1, L1y1); */
+		iLayer =0;
+		do {
+		  iLayer++;
+		  //printf("# Layer=%3u Vis=%u;\n",iLayer, hiddenLayer[iLayer]);
+		  if (!hiddenLayer[iLayer]) {
+			printf("Display %u;\n",iLayer);
+		  }
+		  else {
+			// Setting 21/22 on also turns on 23/24 25/26 27/28 51/52 so need set these off if required
+			printf("Display ?? -%u;\n",iLayer);
+		  }
+		} while (iLayer < iMAXLAYER);
+		}
+	else{
+		dlgMessageBox("\n  Lines are co-linear or parallel - nothing to do.\n");
+		exit (0);
+	}
+printf("Grid Last;\n");
+exit("; SCR '" + ulp_path + "fillet.scr';\n");
+}

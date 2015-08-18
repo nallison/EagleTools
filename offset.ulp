@@ -1,0 +1,285 @@
+#usage "<b>Offset</b>\n"
+       "<p>"
+       "This ULP emulates the Autocad 'Offset' command. "
+       "It offsets a wire on the user defined draft layer by a distance specified in the current units.\n"
+	   "Ensure there is only one wire on the draft layer before running this ULP.\n"
+       "<p>"
+	   "Running this ULP without command line arguments brings up a dialog box to input them.\n"
+	   "Command line usage: RUN offset [<i>offset_distance</i>] [<i>output layer</i>] [<i>draft layer</i>]\n"
+	   "<p>"
+       "<author>Author: Neil Allison, neil@avon-tech-solutions.co.nz</author>\n"
+
+/*
+Rev History
+File:   Offset.ulp
+Author: Neil Allison, 
+        Avon Technical Solutions, PO Box 20350, Christchurch, New Zealand
+        email: neil@avon-tech-solutions.co.nz
+        (C) Copyright, Neil Allison, 2008, All rights reserved.
+Date:  	 4-Apr-2008  NJA  Initial Draft
+		16-Apr-2008  NJA  Version 1.00 Tested in sch, brd, lib (device, symbol, package)
+		24-Jun-2008  NJA  Changed Draft layer to 254 so same as Renumber.  Draft used for footprints
+		16-Dec-2009  NJA  Revised to use ingroup() with V5.6.  Group the ends to be joined
+					To do: handle Arcs with a radial offset
+*/
+
+//USER DEFINED VARIABLES
+//Edit the variables below to change the draft layer and colour and output layers
+//int draftLayer = 254; //default layer that wires are on 
+int draftColour = 12; //Red
+int outputLayer = 21; //tPlace for Boards & Library Packages
+int outputLayerSch = 95; // 95 Values for schematics and symbols
+real offsetDist = 10;
+real offsetDir = 1; // or -1
+int bOriginalToOutputLayer = 0; // Copy line in draftLayer to the output layer 0 = no, 1 = yes
+
+// Constants
+int bDebug = 0; // 0 = false, 1 = true
+int iMINLAYER = 1;
+int iMAXLAYER = 255;
+int iMAXCOORDINATE =  8388607; //  838860.7um
+int iMINCOORDINATE = -8388607; // -838860.7um
+
+// Global Variables
+real L1x1, L1y1, L1x2, L1y2;	// Nasty global variables.  But easier to read than array with same info
+real L2x1, L2y1, L2x2, L2y2;
+real rAngle, b1, d1, a2, b2, d2;
+real L1x, L1y;
+int bL1defined = 0;
+real denom,IntersectX,IntersectY;
+int visibleLayer[]; // by definition all elements are = 0
+int iLayer = 0;
+int iGridUnit = 0;
+real iGridFactor[] = { u2mic(1), u2mm(1), u2mil(1), u2inch(1)};
+int bDoScript = 0;
+
+void calculateOffset(UL_WIRE W)
+{
+	// Calculates offet wire using global variables rather than returning a UL_WIRE
+	//if (W.layer == draftLayer) {
+		bDoScript = 1;
+		if (bDebug) printf("# Debug - Is Draft Wire;\n");
+		if (bL1defined ==0) {			//assign to Line 1 (only need a, b, d)
+			// assign to Line 1 (only need a, b, d)
+			if (bDebug) printf("# Debug - Is Wire 1;\n");
+			L1x1 = u2mic(W.x1);
+			L1y1 = u2mic(W.y1);
+			L1x2 = u2mic(W.x2);
+			L1y2 = u2mic(W.y2);
+			if (L1x1 == L1x2) {
+				if (bDebug) printf("# Debug - Is Wire - Vertical;\n");
+				rAngle = PI/2;
+				offsetDir= -1*offsetDir; // for vertical lines want +ve to right
+				//printf("# Angle (vert)=%6.6f;\n",rAngle);
+			}	
+			else {
+				if (bDebug) printf("# Debug - Is Wire - Angle;\n");
+				rAngle = atan((L1y2-L1y1)/(L1x2-L1x1));
+			}
+			rAngle = rAngle + offsetDir*PI/2; // or - PI/2 for other direction
+			bL1defined = 1;
+			if (bDebug) printf("# Debug - Is Wire 2;\n");
+			// assign to Line 2 (normal to original line)
+			offsetDist = offsetDist*iGridFactor[0]/iGridFactor[iGridUnit]; // convert offset Dist in grid units to mic
+			if (bDebug) printf("# Debug - Offset=%6.6f x=%6.6f y=%6.6f;\n",offsetDist,offsetDist*cos(rAngle),offsetDist*sin(rAngle));
+			L2x1 = L1x1;
+			L2y1 = L1y1;
+			L2x2 = L2x1 + offsetDist*cos(rAngle);
+			L2y2 = L2y1 + offsetDist*sin(rAngle);
+			if (bDebug) printf("# Debug -  W: (%d %d) (%d %d)\n", W.x1, W.y1, W.x2, W.y2);
+			if (bDebug) printf("# Debug - L1: (%8.6f %8.6f) (%8.6f %8.6f)\n", L1x1, L1y1, L1x2, L1y2);
+			if (bDebug) printf("# Debug - L2: (%8.6f %8.6f) (%8.6f %8.6f)\n", L2x1, L2y1, L2x2, L2y2);
+			return;
+		}
+		else {
+			dlgMessageBox("\n More than one wire on Draft Layer. \n Cannot offset multiple wires. \n");
+			if (bDebug) printf("# Debug - More than one wire;\n");
+			exit (0);
+		}
+	//} 
+}
+
+void dlgOffset() 
+{
+	int hor = 1;
+	int ver = 1;
+	//real Value = -50;
+	string fileName;
+	int Result = dlgDialog("Enter Offset Parameters") {
+	dlgHBoxLayout {
+	//dlgStretch(1);
+	dlgLabel("Note - a Positive Offset is:\n"
+				"  - up and/or to the right for Vertical lines and lines with Negative slope\n"
+				"  - up and/or to the left for Horizontal lines and lines with Positive slope\n"
+				"  - in the units of the current grid unit when this ULP is run");
+	//dlgStretch(1);
+	}
+	dlgSpacing(10); 
+
+	dlgGridLayout{
+		dlgCell(0, 0) dlgLabel("Enter the &Offset Distance (negative or positive)");
+		dlgCell(0, 1) dlgRealEdit(offsetDist, -1000000.0, 1000000.0); // need to make this relevant to units in use
+/* 		dlgCell(1, 0) dlgLabel("What is the &Draft Layer Number?");
+		dlgCell(1, 1) dlgIntEdit(draftLayer, iMINLAYER, iMAXLAYER); */
+		dlgCell(2, 0) dlgLabel("What is the Output &Layer Number?");
+		dlgCell(2, 1) dlgIntEdit(outputLayer, iMINLAYER, iMAXLAYER);
+	}
+
+	dlgSpacing(10);
+	dlgHBoxLayout {
+		dlgStretch(1);
+		dlgPushButton("+OK")    dlgAccept();
+		dlgPushButton("Cancel") dlgReject();
+		}
+	};
+}
+
+// ******************************************************************
+// Main
+// ******************************************************************
+string ulp_path;
+int position = strrchr(argv[0], '/');
+if (position >= 0) {
+	ulp_path = strsub(argv[0], 0, position + 1);
+}
+
+
+
+output(ulp_path + "offset.scr", "wt") {
+	if (bDebug) printf("# Debug - Starting\n");
+
+	// If a schematic or a symbol use  outputLayerSch
+	if ((schematic)||(symbol)) outputLayer = outputLayerSch;
+	
+	// Set the visible layers for clean up at end
+	//layers(L){
+	//	if (L.visible) visibleLayer[L.number] = 1;
+	//}
+
+	if (bDebug) printf("# Debug - Default: offsetDist=%6.6f outputLayer=%u draftLayer=%u;\n", offsetDist, outputLayer /*, draftLayer*/);
+	//Get Distance and offset direction from command line
+	if (argc > 1){ 
+		if (strtod(argv[1])){
+			offsetDist = strtod(argv[1]);
+			if (offsetDist > 0){
+				offsetDir = 1;
+			}
+			else{
+			offsetDir = -1;
+			}
+			offsetDist = abs(offsetDist);
+		}
+		//Get Output Layer from command line
+		if (strtol(argv[2])>= iMINLAYER &&  strtod(argv[2])<= iMAXLAYER ){
+			outputLayer = strtol(argv[2]);
+		}
+/* 		//Get Draft Layer from command line
+		if (strtol(argv[3])>= iMINLAYER &&  strtod(argv[3])<= iMAXLAYER ){
+			draftLayer = strtol(argv[3]);
+		} */
+		if (bDebug) printf("# Debug - Args:    offsetDist=%6.6f outputLayer=%u draftLayer=%u;\n", offsetDir*offsetDist, outputLayer/*, draftLayer*/);
+	}
+	else {
+		dlgOffset();
+		if (bDebug) printf("# Debug - Dialog:  offsetDist=%6.6f outputLayer=%u draftLayer=%u;\n", offsetDist, outputLayer/*, draftLayer*/);
+	}
+	
+
+	if (schematic) {
+		if (bDebug) printf("# Debug - Is Schematic;\n");
+		schematic(Sch) {
+			iGridUnit = Sch.grid.unit;
+			// Set the visible layers for clean up at end
+			Sch.layers(L){
+				if (L.visible) visibleLayer[L.number] = 1;
+			}
+			Sch.sheets(Sht){
+				Sht.wires(Wire) {
+					//if (Wire.layer == draftLayer) calculateOffset(Wire);
+					if (ingroup(Wire)) calculateOffset(Wire);
+				}
+			}
+		}
+	}
+
+	if (board) {
+		if (bDebug) printf("# Debug - Is Board;\n");
+		board(Brd) {
+			iGridUnit = Brd.grid.unit;
+			// Set the visible layers for clean up at end
+			Brd.layers(L){
+				if (L.visible) visibleLayer[L.number] = 1;
+			}
+			Brd.wires(Wire) {
+				//if (Wire.layer == draftLayer) calculateOffset(Wire);
+				if (ingroup(Wire)) calculateOffset(Wire);
+			}
+		}
+	}
+
+	if (library) {
+
+		library(Lib){
+			iGridUnit = Lib.grid.unit;
+			// Set the visible layers for clean up at end
+			Lib.layers(L){
+				if (L.visible) visibleLayer[L.number] = 1;
+			}
+		}
+		
+		if (package) {
+			package(Pac){
+				if (bDebug) printf("# Debug - Is Package Name %s;\n", Pac.name);
+				Pac.wires(Wire) {
+					//if (Wire.layer == draftLayer) calculateOffset(Wire);
+					if (ingroup(Wire)) calculateOffset(Wire);
+					}
+			}
+		}
+
+		if (symbol) {
+			symbol(Sym){
+				if (bDebug) printf("# Debug - Is Symbol;\n");
+				//outputLayer = outputLayerSch;
+				if (bDebug) printf("# Debug - Synbol: Lib Unit = %u ;\n",iGridUnit);
+				Sym.wires(Wire) {
+					//if (Wire.layer == draftLayer) calculateOffset(Wire);
+					if (ingroup(Wire)) calculateOffset(Wire);
+					}
+			}
+		}
+
+		if (deviceset) {
+			dlgMessageBox("\n Please run this ULP in a Schematic, Board, Package or Symbol\n");
+			if (bDebug) printf("# Debug - Run from Device so Nothing to do;\n");
+			exit (0);
+		}
+		
+	}
+
+
+	// Create the output script
+	if (bDoScript){
+		printf("Set wire_bend 2;\n");
+		printf("Grid finest mic;\n");
+//		printf("Layer %u Draft;\n", draftLayer);
+//		printf("Set COLOR_LAYER %u %u;\n", draftLayer, draftColour);
+//		printf("Display None %u;\n", draftLayer);
+		printf("copy (%6.0f %6.0f) (%6.0f %6.0f);\n", L2x1, L2y1, L2x2, L2y2);
+		//printf("change layer %u (%6.0f %6.0f);\n", outputLayer, L2x2, L2y2);
+		if (bOriginalToOutputLayer) printf("change layer %u (%6.0f %6.0f);\n", outputLayer, L1x1, L1y1);
+		iLayer =0;
+        do {
+          iLayer++;
+		  //if (bDebug) printf("# Debug - Layer=%3u Vis=%u;\n",iLayer, visibleLayer[iLayer]);
+          if (visibleLayer[iLayer]) printf("Display %u;\n",iLayer);
+        } while (iLayer <= iMAXLAYER);
+		printf("Grid Last;\n");
+		exit("; SCR '" + ulp_path + "offset.scr';\n");
+	}
+	else{
+		dlgMessageBox("\n No wire found on Draft layer. \n Nothing to do.\n");
+		if (bDebug) printf("# Nothing to do;\n");
+		exit (0);
+	}
+}
